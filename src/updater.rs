@@ -150,19 +150,66 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Baixa o instalador para `dir`, conferindo o SHA-256. `progress(baixado, total)`.
-fn download_to(dir: &Path, rel: &Release, mut progress: impl FnMut(u64, u64)) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("Não foi possível criar a pasta temporária: {e}"))?;
-    let name = format!("YTMusic-Setup-{}.exe", rel.version);
-    let part = dir.join(format!("{name}.part"));
-    let target = dir.join(&name);
+/// Arquivo de um Release do GitHub, com o SHA-256 publicado pelo proprio GitHub.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Asset {
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+}
 
-    let mut resp = agent(900).get(&rel.url).header("User-Agent", UA).call().map_err(|e| net_error(&e))?;
-    let total = resp.body().content_length().unwrap_or(rel.size);
+/// Acha o arquivo `name` no ultimo Release de `slug` (`dono/repositorio`). Exige o
+/// SHA-256 (campo `digest`) e um endereco de download no github.com.
+pub fn latest_asset(slug: &str, name: &str) -> Result<Asset, String> {
+    latest_asset_from(API_BASE, slug, name, TRUSTED_DOWNLOADS)
+}
+
+fn latest_asset_from(api_base: &str, slug: &str, name: &str, trusted: &[&str]) -> Result<Asset, String> {
+    let url = format!("{api_base}/repos/{slug}/releases/latest");
+    let mut resp = agent(20).get(&url).header("User-Agent", UA).header("Accept", "application/vnd.github+json").call().map_err(|e| net_error(&e))?;
+    let v: Value = resp.body_mut().read_json().map_err(|e| format!("Resposta inválida do GitHub: {e}"))?;
+    parse_asset(&v, name, trusted)
+}
+
+fn parse_asset(v: &Value, name: &str, trusted: &[&str]) -> Result<Asset, String> {
+    let asset = v["assets"]
+        .as_array()
+        .and_then(|a| a.iter().find(|a| a["name"].as_str() == Some(name)))
+        .ok_or_else(|| format!("O Release não tem o arquivo {name}."))?;
+    let url = asset["browser_download_url"].as_str().ok_or("Arquivo sem endereço de download.")?.to_string();
+    if !trusted.iter().any(|p| url.starts_with(p)) {
+        return Err("Endereço de download não confiável. Download cancelado.".into());
+    }
+    let sha256 = asset["digest"]
+        .as_str()
+        .and_then(|d| d.strip_prefix("sha256:"))
+        .map(str::to_ascii_lowercase)
+        .filter(|h| is_sha256_hex(h))
+        .ok_or_else(|| format!("O GitHub não publica o SHA-256 de {name}; não dá para verificar o download."))?;
+    Ok(Asset { url, sha256, size: asset["size"].as_u64().unwrap_or(0) })
+}
+
+/// Baixa o instalador para `dir`, conferindo o SHA-256. `progress(baixado, total)`.
+fn download_to(dir: &Path, rel: &Release, progress: impl FnMut(u64, u64)) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("Não foi possível criar a pasta temporária: {e}"))?;
+    let target = dir.join(format!("YTMusic-Setup-{}.exe", rel.version));
+    download_verified(&rel.url, &rel.sha256, rel.size, &target, progress)?;
+    Ok(target)
+}
+
+/// Baixa `url` para `target` conferindo o SHA-256. Grava num `.part` e so renomeia
+/// para `target` depois de conferido; se algo falhar, nada fica no disco.
+pub fn download_verified(url: &str, sha256: &str, size: u64, target: &Path, mut progress: impl FnMut(u64, u64)) -> Result<(), String> {
+    let mut part = target.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+
+    let mut resp = agent(900).get(url).header("User-Agent", UA).call().map_err(|e| net_error(&e))?;
+    let total = resp.body().content_length().unwrap_or(size);
     let mut reader = resp.body_mut().with_config().limit(MAX_DOWNLOAD).reader();
 
     let result = (|| -> Result<String, String> {
-        let mut file = std::fs::File::create(&part).map_err(|e| format!("Não foi possível gravar o instalador: {e}"))?;
+        let mut file = std::fs::File::create(&part).map_err(|e| format!("Não foi possível gravar o arquivo: {e}"))?;
         let mut hasher = Sha256::new();
         let (mut buf, mut done, mut last) = (vec![0u8; 64 * 1024], 0u64, Instant::now());
         loop {
@@ -171,7 +218,7 @@ fn download_to(dir: &Path, rel: &Release, mut progress: impl FnMut(u64, u64)) ->
                 break;
             }
             hasher.update(&buf[..n]);
-            file.write_all(&buf[..n]).map_err(|e| format!("Não foi possível gravar o instalador: {e}"))?;
+            file.write_all(&buf[..n]).map_err(|e| format!("Não foi possível gravar o arquivo: {e}"))?;
             done += n as u64;
             if last.elapsed() >= Duration::from_millis(120) {
                 progress(done, total);
@@ -193,13 +240,13 @@ fn download_to(dir: &Path, rel: &Release, mut progress: impl FnMut(u64, u64)) ->
             return Err(e);
         }
     };
-    if got != rel.sha256 {
+    if got != sha256 {
         let _ = std::fs::remove_file(&part);
-        return Err("O arquivo baixado não confere com o SHA-256 publicado. Atualização cancelada por segurança.".into());
+        return Err("O arquivo baixado não confere com o SHA-256 publicado. Download cancelado por segurança.".into());
     }
-    let _ = std::fs::remove_file(&target);
-    std::fs::rename(&part, &target).map_err(|e| format!("Não foi possível finalizar o download: {e}"))?;
-    Ok(target)
+    let _ = std::fs::remove_file(target);
+    std::fs::rename(&part, target).map_err(|e| format!("Não foi possível finalizar o download: {e}"))?;
+    Ok(())
 }
 
 /// Baixa e verifica o instalador numa pasta temporaria propria do app.
@@ -316,6 +363,24 @@ mod tests {
         println!("baixado e conferido: {} ({size} bytes)", path.display());
         assert!(size > 100_000, "instalador pequeno demais");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_asset_rules() {
+        let url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.11.23/yt-dlp.exe";
+        let v = |url: &str, digest: Option<&str>| {
+            let mut a = serde_json::json!({ "name": "yt-dlp.exe", "browser_download_url": url, "size": 7 });
+            if let Some(d) = digest {
+                a["digest"] = Value::String(format!("sha256:{d}"));
+            }
+            serde_json::json!({ "tag_name": "2026.11.23", "assets": [a] })
+        };
+        let a = parse_asset(&v(url, Some(HASH_A)), "yt-dlp.exe", TRUSTED_DOWNLOADS).unwrap();
+        assert_eq!((a.url.as_str(), a.sha256.as_str(), a.size), (url, HASH_A, 7));
+        // sem hash publicado, fora do GitHub ou arquivo inexistente: recusa
+        assert!(parse_asset(&v(url, None), "yt-dlp.exe", TRUSTED_DOWNLOADS).is_err());
+        assert!(parse_asset(&v("https://example.com/yt-dlp.exe", Some(HASH_A)), "yt-dlp.exe", TRUSTED_DOWNLOADS).is_err());
+        assert!(parse_asset(&v(url, Some(HASH_A)), "deno.zip", TRUSTED_DOWNLOADS).is_err());
     }
 
     /// Servidor HTTP minimo em 127.0.0.1 para testar o fluxo de ponta a ponta sem rede.

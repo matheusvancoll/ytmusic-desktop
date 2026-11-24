@@ -30,6 +30,8 @@ pub struct PlayerState {
     pub volume: f32,
     /// A faixa acabou (ou falhou) e a UI deve avancar a fila. A UI zera.
     pub finished: bool,
+    /// Em `Loading`: a faixa ainda nao esta no cache e o yt-dlp esta baixando.
+    pub downloading: bool,
     /// O automix ja comecou a proxima faixa sozinho: a UI so avanca a fila, sem
     /// mandar tocar de novo. A UI zera.
     pub advanced: bool,
@@ -63,6 +65,7 @@ impl Player {
             duration: Duration::ZERO,
             volume: load_volume(),
             finished: false,
+            downloading: false,
             advanced: false,
         }));
         let (tx, rx) = channel();
@@ -164,6 +167,7 @@ fn worker(rx: Receiver<Cmd>, tx: Sender<Cmd>, state: Arc<Mutex<PlayerState>>, ct
     let mut sink: Option<rodio::MixerDeviceSink> = None;
     let mut player: Option<rodio::Player> = None;
     let mut token: u64 = 0;
+    let mut retried: Vec<String> = Vec::new();
     let mut fade: Option<Fade> = None;
     let mut crossfade_secs: u32 = 0;
     let mut next: Option<Track> = None;
@@ -187,6 +191,7 @@ fn worker(rx: Receiver<Cmd>, tx: Sender<Cmd>, state: Arc<Mutex<PlayerState>>, ct
                     s.duration = Duration::from_secs(track.duration_secs as u64);
                     s.current = Some(track.clone());
                     s.finished = false;
+                    s.downloading = cached_file(&track.video_id).is_none();
                 }
                 let (my_token, tx2, ctx2) = (token, tx.clone(), ctx.clone());
                 std::thread::spawn(move || {
@@ -207,7 +212,27 @@ fn worker(rx: Receiver<Cmd>, tx: Sender<Cmd>, state: Arc<Mutex<PlayerState>>, ct
                     }
                     s.status = Status::Playing;
                 }
-                Err(message) => fail(&state, message),
+                Err(message) => {
+                    // Arquivo do cache corrompido (ex.: download antigo interrompido):
+                    // apaga e baixa de novo, uma vez so.
+                    let id = state.lock().unwrap().current.as_ref().map(|t| t.video_id.clone());
+                    let _ = std::fs::remove_file(&path);
+                    match id {
+                        Some(id) if !retried.contains(&id) => {
+                            retried.push(id.clone());
+                            let (my_token, tx2, ctx2) = (token, tx.clone(), ctx.clone());
+                            std::thread::spawn(move || {
+                                let cmd = match ensure_downloaded(&id) {
+                                    Ok(path) => Cmd::Ready { token: my_token, path },
+                                    Err(message) => Cmd::Failed { token: my_token, message },
+                                };
+                                let _ = tx2.send(cmd);
+                                ctx2.request_repaint();
+                            });
+                        }
+                        _ => fail(&state, message),
+                    }
+                }
             },
             Ok(Cmd::Failed { token: t, message }) if t == token => fail(&state, message),
             Ok(Cmd::Ready { .. }) | Ok(Cmd::Failed { .. }) => {} // resposta de uma faixa antiga
@@ -356,10 +381,7 @@ fn cached_file(id: &str) -> Option<PathBuf> {
         .ok()?
         .flatten()
         .map(|e| e.path())
-        .find(|p| {
-            p.file_stem().and_then(|s| s.to_str()) == Some(id)
-                && p.extension().is_some_and(|e| e != "part" && e != "ytdl")
-        })
+        .find(|p| is_final_audio(p, id))
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -397,9 +419,11 @@ pub fn find_ytdlp() -> Option<PathBuf> {
     which("yt-dlp")
 }
 
-/// Argumento `--js-runtimes` para o yt-dlp: Deno (inclusive o do winget) ou Node.
-fn js_runtime_arg() -> Option<String> {
-    if let Some(p) = which("deno").or_else(|| winget_package_exe("DenoLand.Deno_", "deno.exe")) {
+/// Argumento `--js-runtimes` para o yt-dlp: Deno (o baixado pelo app, o do PATH ou o
+/// do winget) ou Node.
+pub(crate) fn js_runtime_arg() -> Option<String> {
+    let own = Some(util::data_dir().join("deno.exe")).filter(|p| p.is_file());
+    if let Some(p) = own.or_else(|| which("deno")).or_else(|| winget_package_exe("DenoLand.Deno_", "deno.exe")) {
         return Some(format!("deno:{}", p.display()));
     }
     which("node").map(|p| format!("node:{}", p.display()))
@@ -415,12 +439,18 @@ fn ensure_downloaded(id: &str) -> Result<PathBuf, String> {
         return Ok(p); // outro thread terminou enquanto esperavamos
     }
 
-    let ytdlp = find_ytdlp().ok_or("yt-dlp nao encontrado. Instale com: winget install yt-dlp.yt-dlp")?;
+    let ytdlp = find_ytdlp().ok_or_else(|| crate::tr!("player.ytdlp_missing").to_string())?;
+    // Baixa numa pasta temporaria e so move para o cache quando o yt-dlp termina
+    // (inclusive o conserto do container pelo ffmpeg). Antes o arquivo parcial ja
+    // aparecia no cache com o nome final, e tocar a faixa durante o download dava
+    // "formato nao suportado".
+    let staging = staging_dir();
+    clear_staging(id);
     let mut cmd = Command::new(ytdlp);
-    cmd.args(["-f", "bestaudio[ext=m4a]/140"])
-        .args(["--no-playlist", "--no-warnings", "--no-progress", "--no-part", "-q"])
+    cmd.args(["-f", "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/140"])
+        .args(["--no-playlist", "--no-warnings", "--no-progress", "-q"])
         .arg("-o")
-        .arg(util::cache_dir().join("%(id)s.%(ext)s"));
+        .arg(staging.join("%(id)s.%(ext)s"));
     // Versoes recentes do yt-dlp precisam de um runtime JS para o YouTube.
     if let Some(rt) = js_runtime_arg() {
         cmd.args(["--js-runtimes", &rt]);
@@ -429,11 +459,47 @@ fn ensure_downloaded(id: &str) -> Result<PathBuf, String> {
     hide_console(&mut cmd);
     let out = cmd.output().map_err(|e| format!("falha ao executar yt-dlp: {e}"))?;
     if !out.status.success() {
+        clear_staging(id);
         let err = String::from_utf8_lossy(&out.stderr);
         let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("erro desconhecido");
         return Err(format!("yt-dlp: {}", last.trim()));
     }
-    cached_file(id).ok_or_else(|| "o yt-dlp nao gerou arquivo de audio".to_string())
+    let done = std::fs::read_dir(&staging)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| is_final_audio(p, id))
+        .ok_or("o yt-dlp nao gerou arquivo de audio")?;
+    let dest = util::cache_dir().join(done.file_name().unwrap_or_default());
+    std::fs::rename(&done, &dest).map_err(|e| format!("cache: {e}"))?;
+    clear_staging(id);
+    Ok(dest)
+}
+
+/// `<cache>/tmp`: downloads em andamento.
+fn staging_dir() -> PathBuf {
+    let dir = util::cache_dir().join("tmp");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// `<id>.<ext>` final (nao `.part`, `.ytdl`, `.temp.m4a` etc.).
+fn is_final_audio(p: &Path, id: &str) -> bool {
+    p.is_file()
+        && p.file_stem().and_then(|s| s.to_str()) == Some(id)
+        && p.extension().is_some_and(|e| e != "part" && e != "ytdl")
+}
+
+/// Apaga restos de um download anterior desta faixa.
+fn clear_staging(id: &str) {
+    let Ok(rd) = std::fs::read_dir(staging_dir()) else { return };
+    for e in rd.flatten() {
+        if e.file_name().to_string_lossy().starts_with(&format!("{id}.")) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -447,9 +513,21 @@ fn hide_console(_: &mut Command) {}
 
 /// Mantem so as 80 faixas mais recentes no cache (~4 MB cada).
 fn trim_cache() {
+    // Downloads interrompidos de sessoes anteriores.
+    let _ = std::fs::remove_dir_all(staging_dir());
     let Ok(rd) = std::fs::read_dir(util::cache_dir()) else { return };
     let mut files: Vec<_> = rd
         .flatten()
+        .filter(|e| e.path().is_file())
+        .filter(|e| {
+            // Restos do formato antigo (arquivo parcial gravado direto no cache).
+            let name = e.file_name().to_string_lossy().to_string();
+            let junk = name.contains(".temp.") || name.ends_with(".part") || name.ends_with(".ytdl");
+            if junk {
+                let _ = std::fs::remove_file(e.path());
+            }
+            !junk
+        })
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .collect();
     files.sort_by(|a, b| b.0.cmp(&a.0));

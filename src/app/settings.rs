@@ -20,21 +20,32 @@ pub(super) enum Page {
     General,
 }
 
+/// Chaves de traducao do titulo de cada pagina.
 const PAGES: [(Page, &str); 4] = [
-    (Page::Account, "Conta"),
-    (Page::Playback, "Reprodução"),
-    (Page::Updates, "Atualizações"),
-    (Page::General, "Geral"),
+    (Page::Account, "settings.page_account"),
+    (Page::Playback, "settings.playback"),
+    (Page::Updates, "settings.page_updates"),
+    (Page::General, "settings.page_general"),
 ];
 
 impl App {
+    /// Abre a janela de configuracoes na pagina `page` (ou a fecha, se ja estava nela).
+    pub(super) fn open_settings(&mut self, page: Page) {
+        if self.show_settings && self.settings_page == page {
+            self.show_settings = false;
+        } else {
+            self.show_settings = true;
+            self.settings_page = page;
+        }
+    }
+
     /// Abre/atualiza a janela de configuracoes enquanto `show_settings` estiver ligado.
     pub(super) fn settings_window(&mut self, ctx: &egui::Context) {
         if !self.show_settings {
             return;
         }
         let mut builder = egui::ViewportBuilder::default()
-            .with_title("Configurações do YT Music")
+            .with_title(tr!("settings.window_title"))
             .with_inner_size([780.0, 520.0])
             .with_min_inner_size([560.0, 360.0]);
         if let Some(icon) = crate::app_icon() {
@@ -55,8 +66,8 @@ impl App {
             .exact_size(210.0)
             .frame(egui::Frame::new().fill(WINDOW_BG).inner_margin(Margin::symmetric(10, 14)))
             .show(ui, |ui| {
-                for (page, label) in PAGES {
-                    if nav_item(ui, label, page, self.settings_page == page) {
+                for (page, key) in PAGES {
+                    if nav_item(ui, tr!(key), page, self.settings_page == page) {
                         self.settings_page = page;
                     }
                     ui.add_space(2.0);
@@ -64,7 +75,7 @@ impl App {
             });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(WINDOW_BG).inner_margin(Margin::symmetric(28, 18))).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                let title = PAGES.iter().find(|(p, _)| *p == self.settings_page).map_or("", |(_, t)| *t);
+                let title = PAGES.iter().find(|(p, _)| *p == self.settings_page).map_or("", |(_, k)| tr!(k));
                 ui.label(RichText::new(title).size(26.0).strong());
                 ui.add_space(14.0);
                 match self.settings_page {
@@ -80,17 +91,17 @@ impl App {
     fn account_page(&mut self, ui: &mut egui::Ui) {
         card(ui, |ui| {
             if self.client.is_logged_in() {
-                let who = self.account_name.clone().unwrap_or_else(|| "Conta conectada".into());
-                row(ui, &who, Some("Conectado ao YouTube Music"), |ui| {
-                    if ui.button("Desconectar").clicked() {
+                let who = self.account_name.clone().unwrap_or_else(|| tr!("account.connected_fallback").into());
+                row(ui, &who, Some(tr!("account.connected_to")), |ui| {
+                    if ui.button(tr!("account.disconnect")).clicked() {
                         Auth::clear();
                         self.apply_auth(None);
-                        self.notice = Some("Conta desconectada.".into());
+                        self.notice = Some(tr!("account.disconnected").into());
                     }
                 });
             } else {
-                row(ui, "Conta do YouTube", Some("Conecte para ver suas curtidas e playlists"), |ui| {
-                    if pill_button(ui, "Conectar", true).clicked() {
+                row(ui, tr!("account.youtube_account"), Some(tr!("account.connect_desc")), |ui| {
+                    if pill_button(ui, tr!("account.connect_short"), true).clicked() {
                         self.connect_account(&ui.ctx().clone());
                         self.show_settings = false;
                     }
@@ -98,24 +109,24 @@ impl App {
             }
         });
 
-        section_title(ui, "Avançado");
+        section_title(ui, tr!("settings.advanced"));
         card(ui, |ui| {
             ui.add_space(6.0);
-            ui.collapsing("Importar cookie manualmente", |ui| {
-                ui.label(RichText::new("Cole o cabeçalho Cookie de music.youtube.com (DevTools > Rede).").color(DIM).small());
+            ui.collapsing(tr!("account.cookie_import"), |ui| {
+                ui.label(RichText::new(tr!("account.cookie_help")).color(DIM).small());
                 ui.add_space(4.0);
                 ui.add(egui::TextEdit::multiline(&mut self.cookie_input).desired_rows(3).desired_width(f32::INFINITY));
                 ui.add_space(4.0);
-                if ui.button("Importar").clicked() {
+                if ui.button(tr!("account.cookie_import_button")).clicked() {
                     match Auth::from_cookie_header(&self.cookie_input) {
                         Some(auth) => {
                             let _ = auth.save();
                             self.apply_auth(Some(auth));
                             self.cookie_input.clear();
-                            self.notice = Some("Cookie importado.".into());
+                            self.notice = Some(tr!("account.cookie_imported").into());
                             self.show_settings = false;
                         }
-                        None => self.notice = Some("Cookie invalido: falta o SAPISID.".into()),
+                        None => self.notice = Some(tr!("account.cookie_invalid").into()),
                     }
                 }
                 ui.add_space(6.0);
@@ -127,7 +138,7 @@ impl App {
     fn playback_page(&mut self, ui: &mut egui::Ui) {
         card(ui, |ui| {
             let mut on = self.automix;
-            row(ui, "Automix", Some("Mescla o fim de uma música com o início da próxima"), |ui| {
+            row(ui, tr!("automix.title"), Some(tr!("automix.desc")), |ui| {
                 if toggle(ui, &mut on).changed() {
                     self.automix = on;
                     self.apply_automix(true);
@@ -135,7 +146,7 @@ impl App {
             });
             if self.automix {
                 divider(ui);
-                row(ui, "Duração da mescla", Some("Por quanto tempo as duas músicas tocam juntas"), |ui| {
+                row(ui, tr!("automix.duration"), Some(tr!("automix.duration_desc")), |ui| {
                     let mut secs = self.automix_secs;
                     ui.spacing_mut().slider_width = 150.0;
                     let slider = egui::Slider::new(&mut secs, crate::player::AUTOMIX_MIN_SECS..=crate::player::AUTOMIX_MAX_SECS).suffix(" s");
@@ -147,17 +158,28 @@ impl App {
             }
         });
         ui.add_space(8.0);
-        ui.label(RichText::new("A mescla só acontece quando a próxima música já foi baixada, e não vale com repetir faixa.").color(DIM).small());
+        ui.label(RichText::new(tr!("automix.note")).color(DIM).small());
+
+        section_title(ui, tr!("settings.mini_player"));
+        let mut changed = false;
+        card(ui, |ui| {
+            row(ui, tr!("settings.mini_compact"), None, |ui| changed |= toggle(ui, &mut self.prefs.mini_compact).changed());
+            divider(ui);
+            row(ui, tr!("settings.mini_pinned"), None, |ui| changed |= toggle(ui, &mut self.prefs.mini_pinned).changed());
+        });
+        if changed {
+            self.save_prefs();
+        }
     }
 
     /// Atualizacoes: tudo a pedido. Nada consulta a rede sem o clique em "Verificar".
     fn updates_page(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let busy = self.update_busy();
-        let installed = format!("Versão instalada: {}", updater::CURRENT);
+        let installed = tr!("update.installed", version = updater::CURRENT);
         card(ui, |ui| {
             row(ui, "YT Music", Some(&installed), |ui| {
-                let clicked = ui.add_enabled_ui(!busy, |ui| pill_button(ui, "Verificar atualizações", true).clicked()).inner;
+                let clicked = ui.add_enabled_ui(!busy, |ui| pill_button(ui, tr!("update.check"), true).clicked()).inner;
                 if clicked {
                     self.check_for_update(&ctx);
                 }
@@ -167,29 +189,29 @@ impl App {
 
         match self.update_state.clone() {
             UpdateState::Idle => {
-                ui.label(RichText::new("O app não verifica atualizações sozinho. Clique em “Verificar atualizações” para consultar o GitHub.").color(DIM).small());
+                ui.label(RichText::new(tr!("update.idle")).color(DIM).small());
             }
             UpdateState::Checking => message_card(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Verificando...");
+                    ui.label(tr!("update.checking"));
                 });
             }),
             UpdateState::UpToDate => message_card(ui, |ui| {
-                ui.label(RichText::new("Você já está na versão mais recente.").size(15.0).color(Color32::from_gray(235)));
+                ui.label(RichText::new(tr!("update.up_to_date")).size(15.0).color(Color32::from_gray(235)));
             }),
             UpdateState::Available(rel) => {
-                let title = format!("Nova versão {} disponível", rel.version);
+                let title = tr!("update.available", version = rel.version);
                 card(ui, |ui| {
-                    row(ui, &title, Some("O download é conferido por SHA-256 antes de instalar"), |ui| {
-                        if pill_button(ui, "Baixar e instalar", true).clicked() {
+                    row(ui, &title, Some(tr!("update.sha_note")), |ui| {
+                        if pill_button(ui, tr!("update.install"), true).clicked() {
                             self.start_update(rel.clone(), &ctx);
                         }
                     });
                     if !rel.notes.trim().is_empty() {
                         divider(ui);
                         ui.add_space(10.0);
-                        ui.label(RichText::new("Novidades").strong());
+                        ui.label(RichText::new(tr!("update.notes")).strong());
                         egui::ScrollArea::vertical().max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
                             ui.label(RichText::new(rel.notes.trim()).color(DIM).small());
                         });
@@ -198,13 +220,13 @@ impl App {
                 });
             }
             UpdateState::Downloading { done, total } => message_card(ui, |ui| {
-                ui.label("Baixando a atualização...");
+                ui.label(tr!("update.downloading"));
                 ui.add_space(6.0);
                 let fraction = if total > 0 { (done as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
                 ui.add(egui::ProgressBar::new(fraction).fill(ACCENT).show_percentage());
             }),
             UpdateState::Installing => message_card(ui, |ui| {
-                ui.label("Instalando... o app vai fechar e abrir de novo.");
+                ui.label(tr!("update.installing"));
             }),
             UpdateState::Failed(error) => message_card(ui, |ui| {
                 ui.add(egui::Label::new(RichText::new(error).color(ACCENT)).wrap());
@@ -213,25 +235,78 @@ impl App {
     }
 
     fn general_page(&mut self, ui: &mut egui::Ui) {
-        section_title(ui, "Componentes");
+        let mut changed = false;
         card(ui, |ui| {
-            let desc = if self.ytdlp_ok { "Baixa o áudio das músicas" } else { "Instale com: winget install yt-dlp.yt-dlp" };
-            row(ui, "yt-dlp", Some(desc), |ui| {
-                if self.ytdlp_ok {
-                    ui.label(RichText::new("Encontrado").color(DIM));
-                } else {
-                    ui.colored_label(ACCENT, "Não encontrado");
-                }
-            });
-        });
-
-        section_title(ui, "Sobre");
-        card(ui, |ui| {
-            row(ui, "YT Music", None, |ui| {
-                ui.label(RichText::new(format!("Versão {}", env!("CARGO_PKG_VERSION"))).color(DIM));
+            row(ui, tr!("settings.language"), None, |ui| {
+                let current = crate::i18n::lang();
+                egui::ComboBox::from_id_salt("lang").selected_text(current.native_name()).width(180.0).show_ui(ui, |ui| {
+                    for l in crate::i18n::Lang::ALL {
+                        if ui.selectable_label(l == current, l.native_name()).clicked() && l != current {
+                            crate::i18n::set_lang(l);
+                            self.prefs.lang = Some(l.code().to_string());
+                            changed = true;
+                        }
+                    }
+                });
             });
             divider(ui);
-            row(ui, "Repositório", None, |ui| {
+            row(ui, tr!("settings.show_queue"), None, |ui| changed |= toggle(ui, &mut self.prefs.show_queue).changed());
+        });
+        if changed {
+            self.save_prefs();
+        }
+
+        section_title(ui, tr!("settings.shortcuts"));
+        card(ui, |ui| {
+            ui.add_space(12.0);
+            egui::Grid::new("shortcuts").num_columns(2).spacing(vec2(24.0, 6.0)).show(ui, |ui| {
+                for (k, what) in [
+                    (tr!("key.space_k"), tr!("shortcut.toggle")),
+                    ("← / →  (J / L)", tr!("shortcut.seek")),
+                    ("Ctrl+← / Ctrl+→", tr!("shortcut.prev_next")),
+                    ("↑ / ↓", tr!("shortcut.volume")),
+                    ("M", tr!("shortcut.mute")),
+                    ("S / R", tr!("shortcut.shuffle_repeat")),
+                    (tr!("key.ctrl_f_slash"), tr!("shortcut.search")),
+                    (tr!("shortcut.media_keys"), tr!("shortcut.media_keys_note")),
+                ] {
+                    ui.label(RichText::new(k).strong());
+                    ui.label(RichText::new(what).color(DIM));
+                    ui.end_row();
+                }
+            });
+            ui.add_space(12.0);
+        });
+
+        section_title(ui, tr!("general.components"));
+        card(ui, |ui| {
+            let found = |ui: &mut egui::Ui, ok: bool| {
+                if ok {
+                    ui.label(RichText::new(tr!("general.found")).color(DIM));
+                } else {
+                    ui.colored_label(ACCENT, tr!("general.not_found"));
+                }
+            };
+            row(ui, "yt-dlp", Some(tr!("general.ytdlp_desc")), |ui| found(ui, !self.missing.ytdlp));
+            divider(ui);
+            row(ui, tr!("general.js_runtime"), Some(tr!("general.js_desc")), |ui| found(ui, !self.missing.js_runtime));
+            if self.missing.any() || matches!(self.deps_job, super::DepsJob::Working(..)) {
+                divider(ui);
+                row(ui, tr!("deps.install"), Some(tr!("deps.source_note")), |ui| self.deps_controls(ui));
+            }
+        });
+        if let super::DepsJob::Failed(e) = &self.deps_job {
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(RichText::new(tr!("deps.failed", error = e)).color(ACCENT).small()).wrap());
+        }
+
+        section_title(ui, tr!("general.about"));
+        card(ui, |ui| {
+            row(ui, "YT Music", None, |ui| {
+                ui.label(RichText::new(tr!("general.version", version = env!("CARGO_PKG_VERSION"))).color(DIM));
+            });
+            divider(ui);
+            row(ui, tr!("general.repository"), None, |ui| {
                 if ui.link(REPO_URL.trim_start_matches("https://")).clicked() {
                     // Abre no navegador padrao. So a URL fixa acima chega aqui.
                     let _ = std::process::Command::new("explorer").arg(REPO_URL).spawn();

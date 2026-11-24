@@ -13,7 +13,6 @@ use wry::WebViewBuilder;
 
 const LOGIN_URL: &str =
     "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F";
-const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0";
 
 fn main() {
     let event_loop = EventLoopBuilder::new().build();
@@ -25,7 +24,8 @@ fn main() {
 
     let webview = WebViewBuilder::new()
         .with_url(LOGIN_URL)
-        .with_user_agent(UA)
+        // Sem UA fixo: o WebView2 usa o do Edge instalado, sempre atual e coerente
+        // com o motor real (um UA velho ou diferente do motor faz o Google bloquear).
         // Sessao descartavel: nada do login fica no perfil do WebView2.
         .with_incognito(true)
         .build(&window)

@@ -31,7 +31,6 @@ pub struct Client {
     agent: ureq::Agent,
 }
 
-const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 const SONGS_FILTER: &str = "EgWKAQIIAWoMEA4QChADEAQQCRAF";
 
 impl Client {
@@ -62,7 +61,7 @@ impl Client {
         let mut req = self
             .agent
             .post(&url)
-            .header("User-Agent", UA)
+            .header("User-Agent", util::browser_ua())
             .header("Origin", ORIGIN)
             .header("X-Goog-AuthUser", "0")
             .header("Accept-Language", "pt-BR,pt;q=0.9,en;q=0.8");
@@ -138,6 +137,27 @@ impl Client {
         Ok(parse_queue(&resp))
     }
 
+    /// Adiciona uma faixa a uma playlist da biblioteca. `browse_id` e o da grade
+    /// de playlists (`VLPL...`); a API quer o id sem o prefixo `VL`.
+    pub fn add_to_playlist(&self, browse_id: &str, video_id: &str) -> Result<(), String> {
+        if self.auth.is_none() {
+            return Err(crate::tr!("playlists.need_login").into());
+        }
+        let playlist_id = browse_id.strip_prefix("VL").unwrap_or(browse_id);
+        let resp = self.post(
+            "browse/edit_playlist",
+            json!({
+                "playlistId": playlist_id,
+                "actions": [{ "action": "ACTION_ADD_VIDEO", "addedVideoId": video_id, "dedupeOption": "DEDUPE_OPTION_SKIP" }],
+            }),
+        )?;
+        match resp.get("status").and_then(Value::as_str) {
+            Some("STATUS_SUCCEEDED") => Ok(()),
+            Some(other) => Err(crate::tr!("playlists.rejected", status = other)),
+            None => Err(crate::tr!("playlists.not_confirmed").into()),
+        }
+    }
+
     /// Nome da conta conectada, se a API devolver.
     pub fn account_name(&self) -> Option<String> {
         if self.auth.is_none() {
@@ -154,9 +174,9 @@ impl Client {
 fn friendly(e: &ureq::Error) -> String {
     match e {
         ureq::Error::StatusCode(401) | ureq::Error::StatusCode(403) => {
-            "Sessao expirada: conecte a conta de novo.".to_string()
+            crate::tr!("account.session_expired").to_string()
         }
-        other => format!("Falha de rede: {other}"),
+        other => crate::tr!("account.network_error", error = other),
     }
 }
 

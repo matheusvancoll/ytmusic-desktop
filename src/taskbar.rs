@@ -104,7 +104,7 @@ mod imp {
         DefSubclassProc, ITaskbarList3, SetWindowSubclass, TaskbarList, THB_FLAGS, THB_ICON, THB_TOOLTIP, THBF_ENABLED, THBN_CLICKED,
         THUMBBUTTON,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, DestroyIcon, HICON, ICONINFO, RegisterWindowMessageW, WM_COMMAND};
+    use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, DestroyIcon, HICON, ICONINFO, RegisterWindowMessageW, WM_COMMAND, WM_SIZE};
     use windows::core::w;
 
     const ID_PREV: u32 = 1;
@@ -132,6 +132,13 @@ mod imp {
                     ctx.request_repaint(); // acorda o app mesmo com a janela em segundo plano
                 }
                 return LRESULT(0);
+            }
+        }
+        // Minimizar/restaurar nao gera um quadro no eframe; acordamos o app para
+        // ele abrir/fechar o mini-player na hora.
+        if msg == WM_SIZE {
+            if let Some(ctx) = CTX.get() {
+                ctx.request_repaint();
             }
         }
         let created = BUTTON_CREATED_MSG.load(Ordering::Relaxed);

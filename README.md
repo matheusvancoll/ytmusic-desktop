@@ -54,6 +54,12 @@ Get-FileHash .\YTMusic-Setup-<versão>.exe -Algorithm SHA256
 - **Responsivo**: em janelas estreitas o menu lateral vira abas e o player se reorganiza em duas linhas.
 - **Leve**: interface em [egui](https://github.com/emilk/egui) com renderização por GPU, áudio decodificado em Rust puro. Sem `mpv` nem `ffmpeg`.
 - **Próxima faixa já pronta**: o app baixa a próxima música da fila enquanto a atual toca, então a troca é imediata.
+- **Teclas de mídia**: play/pause, próxima e anterior do teclado e do fone, com o painel de mídia do Windows (capa e título), mesmo minimizado.
+- **Mini-player flutuante**: pelo botão de mini-player na barra superior, a janela principal é minimizada e um mini-player de vidro fica sobre todas as janelas (minimizar pelo Windows continua só minimizando). Dois formatos (completo, com aleatório/repetir/Mix, e compacto, só com os controles), arrastável, com botão de travar, esconder e fechar que aparecem no hover.
+- **A seguir / Relacionadas**: painel à direita com a fila e as sugestões da música atual.
+- **Playlists no menu**: clique em Playlists para listar todas no menu lateral; arraste uma música para uma delas para adicioná-la.
+- **Atalhos de teclado**: Espaço, ←/→, Ctrl+←/→, ↑/↓, M, S, R, Ctrl+F (lista completa em Configurações > Geral).
+- **Português e inglês**: textos por chave em `locales/*.json` (segue o idioma do Windows; troque em Configurações > Geral).
 - **Automix** (desligado por padrão): mescla o fim de uma música com o início da próxima, com duração ajustável de 2 a 12 segundos. Só acontece quando a próxima já foi baixada e não vale com *repetir faixa*.
 - **Controles na barra de tarefas**: passe o mouse sobre o ícone do app e use anterior, play/pause e próxima direto na miniatura.
 - **Configurações**: janela própria com as páginas Conta, Reprodução, Atualizações e Geral.
@@ -153,6 +159,7 @@ Tudo em `%LOCALAPPDATA%\ytmusic\`:
 | --- | --- |
 | `auth.bin` | cookies da sessão, protegidos pelo DPAPI |
 | `volume` | último volume usado |
+| `prefs.json` | preferências (idioma, mini-player, painel) |
 | `automix` | automix ligado/desligado e a duração da mescla (sem o arquivo, fica desligado) |
 | `cache\` | áudios das últimas 80 faixas (cerca de 4 MB cada), limpo automaticamente |
 
@@ -179,6 +186,10 @@ Estrutura do código:
 | `src/taskbar.rs` | botões de controle na miniatura da barra de tarefas |
 | `src/auth.rs` | credenciais: cookie, `SAPISIDHASH` e proteção via DPAPI |
 | `src/bin/login.rs` | janela de login em WebView2 (executável separado) |
+| `src/mini.rs` | mini-player flutuante (vidro, dois formatos) |
+| `src/media.rs` | teclas de mídia e painel de mídia do Windows (SMTC) |
+| `src/i18n.rs` | traduções por chave (`tr!("chave")`), arquivos em `locales/` |
+| `src/prefs.rs` | preferências (`prefs.json`) |
 | `installer/` | script do instalador (Inno Setup) e o `build.ps1` que o gera |
 
 ## Stack

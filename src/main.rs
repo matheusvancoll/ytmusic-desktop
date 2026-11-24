@@ -2,7 +2,12 @@
 
 mod app;
 mod auth;
+mod deps;
+mod i18n;
+mod media;
+mod mini;
 mod player;
+mod prefs;
 mod taskbar;
 mod updater;
 mod util;
@@ -12,9 +17,12 @@ fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
 
     // Modo de depuracao: `ytmusic --search "termo"` imprime os resultados.
-    if args.get(1).map(String::as_str) == Some("--search") {
+    // `ytmusic --liked` imprime as musicas curtidas da conta conectada.
+    let debug = args.get(1).map(String::as_str);
+    if matches!(debug, Some("--search") | Some("--liked")) {
         let client = ytm::Client::new(auth::Auth::load());
-        match client.search(&args[2..].join(" ")) {
+        let result = if debug == Some("--liked") { client.liked() } else { client.search(&args[2..].join(" ")) };
+        match result {
             Ok(tracks) => tracks.iter().for_each(|t| {
                 println!("{} | {} | {} | {}", t.video_id, t.title, t.artists, util::fmt_time(t.duration_secs as u64));
             }),
@@ -26,7 +34,9 @@ fn main() -> eframe::Result {
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_title("YT Music")
         .with_inner_size([1000.0, 680.0])
-        .with_min_inner_size([360.0, 520.0]);
+        .with_min_inner_size([360.0, 520.0])
+        // Permite que a janela do mini-player (filha) tenha fundo translucido.
+        .with_transparent(true);
     if let Some(icon) = app_icon() {
         viewport = viewport.with_icon(icon);
     }

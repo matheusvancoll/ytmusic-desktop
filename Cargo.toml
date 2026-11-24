@@ -17,7 +17,7 @@ path = "src/bin/login.rs"
 
 [dependencies]
 dirs = "7.0.0"
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "clipboard"] }
 egui_extras = { version = "0.37.0", features = ["image", "http"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "symphonia-aac", "symphonia-isomp4"] }

@@ -106,7 +106,8 @@ Tudo em `%LOCALAPPDATA%\ytmusic\`:
 | --- | --- |
 | `auth.bin` | cookies da sessão, protegidos pelo DPAPI |
 | `volume` | último volume usado |
-| `cache\` | áudios das últimas 80 faixas (cerca de 4 MB cada), limpo automaticamente |
+| `cache\` | áudios baixados, limitados pelo valor configurado no menu **Configurações** (padrão: 320 MB) |
+| `cache_limit` | limite de tamanho do cache, em MB |
 
 Para remover tudo, apague essa pasta.
 

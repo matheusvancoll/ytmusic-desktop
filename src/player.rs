@@ -63,7 +63,8 @@ impl Player {
             .name("audio".into())
             .spawn(move || worker(rx, worker_tx, worker_state, worker_ctx))
             .expect("thread de audio");
-        std::thread::spawn(trim_cache);
+        let limite = load_cache_limit_mb();
+        std::thread::spawn(move || trim_cache(limite));
         Player { tx, state, ctx }
     }
 
@@ -309,22 +310,39 @@ fn hide_console(cmd: &mut Command) {
 #[cfg(not(windows))]
 fn hide_console(_: &mut Command) {}
 
-/// Mantem so as 80 faixas mais recentes no cache (~4 MB cada).
-fn trim_cache() {
+/// Mantem o cache dentro do limite, apagando os arquivos mais antigos.
+/// O mais recente nunca e apagado, mesmo que sozinho exceda o limite.
+pub fn trim_cache(limite_mb: u64) {
     let Ok(rd) = std::fs::read_dir(util::cache_dir()) else { return };
     let mut files: Vec<_> = rd
         .flatten()
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            Some((m.modified().ok()?, m.len(), e.path()))
+        })
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
-    for (_, path) in files.into_iter().skip(80) {
-        let _ = std::fs::remove_file(path);
+    files.sort_by(|a, b| b.0.cmp(&a.0)); // mais recentes primeiro
+    let limite = clamp_cache_limit(limite_mb) * 1024 * 1024;
+    let mut total = 0u64;
+    for (_, size, path) in files {
+        if total > 0 && total.saturating_add(size) > limite {
+            let _ = std::fs::remove_file(path);
+        } else {
+            total += size;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_limit_is_clamped() {
+        assert_eq!(clamp_cache_limit(1), CACHE_MIN_MB);
+        assert_eq!(clamp_cache_limit(320), 320);
+        assert_eq!(clamp_cache_limit(9999), CACHE_MAX_MB);
+    }
 
     /// Baixa uma faixa de verdade e confere que o rodio decodifica e busca.
     /// Rode com `cargo test download_and_decode -- --ignored --nocapture`.
@@ -363,6 +381,26 @@ mod tests {
         assert!(p2 > Duration::from_secs(119) && p2 < Duration::from_secs(123), "seek falhou: {p2:?}");
         assert!(!player.empty());
     }
+}
+
+pub(crate) const CACHE_PADRAO_MB: u64 = 320;
+pub(crate) const CACHE_MIN_MB: u64 = 32;
+pub(crate) const CACHE_MAX_MB: u64 = 4096;
+
+fn clamp_cache_limit(v: u64) -> u64 {
+    v.clamp(CACHE_MIN_MB, CACHE_MAX_MB)
+}
+
+pub fn load_cache_limit_mb() -> u64 {
+    std::fs::read_to_string(util::data_dir().join("cache_limit"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .map(clamp_cache_limit)
+        .unwrap_or(CACHE_PADRAO_MB)
+}
+
+pub fn save_cache_limit_mb(v: u64) {
+    let _ = std::fs::write(util::data_dir().join("cache_limit"), clamp_cache_limit(v).to_string());
 }
 
 fn volume_file() -> PathBuf {

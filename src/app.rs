@@ -70,6 +70,7 @@ pub struct App {
     cookie_input: String,
     account_name: Option<String>,
     ytdlp_ok: bool,
+    cache_mb: u64,
     #[cfg(windows)]
     taskbar: Option<crate::taskbar::Taskbar>,
 }
@@ -125,6 +126,7 @@ impl App {
             cookie_input: String::new(),
             account_name: None,
             ytdlp_ok: find_ytdlp().is_some(),
+            cache_mb: crate::player::load_cache_limit_mb(),
             #[cfg(windows)]
             taskbar: init_taskbar(cc),
         };
@@ -419,18 +421,11 @@ impl App {
         if resp.hovered() || self.show_settings {
             ui.painter().circle_stroke(c, 17.0, Stroke::new(2.0, Color32::from_white_alpha(90)));
         }
-        let initial = self.account_name.as_deref().and_then(|n| n.chars().next()).map(|ch| ch.to_uppercase().to_string());
-        match (logged, initial) {
-            (true, Some(i)) => {
-                ui.painter().text(c, Align2::CENTER_CENTER, i, FontId::proportional(16.0), Color32::WHITE);
-            }
-            _ => {
-                // Silhueta de pessoa.
-                let p = ui.painter().with_clip_rect(rect);
-                p.circle_filled(pos2(c.x, c.y - 4.0), 5.0, Color32::from_gray(200));
-                p.circle_filled(pos2(c.x, c.y + 12.0), 9.0, Color32::from_gray(200));
-            }
-        }
+        // Disco branco com a silhueta recortada na cor do fundo ( mesma forma do SVG ).
+        let fundo = if logged { AVATAR } else { Color32::from_gray(70) };
+        ui.painter().circle_filled(c, 11.0, Color32::WHITE);
+        ui.painter().circle_filled(pos2(c.x, c.y - 1.7), 4.0, fundo);
+        ui.painter().circle_filled(pos2(c.x, c.y + 9.5), 6.8, fundo);
         if resp.on_hover_text("Conta e ajustes").clicked() {
             self.show_settings = !self.show_settings;
         }
@@ -455,7 +450,7 @@ impl App {
             return;
         }
         let mut open = true;
-        egui::Window::new("Conta")
+        egui::Window::new("Configurações")
             .open(&mut open)
             .anchor(Align2::RIGHT_TOP, vec2(-12.0, 56.0))
             .collapsible(false)
@@ -504,6 +499,24 @@ impl App {
                     }
                     None => self.notice = Some("Cookie invalido: falta o SAPISID.".into()),
                 }
+            }
+        });
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.label(RichText::new("Armazenamento").strong());
+        ui.horizontal(|ui| {
+            ui.label("Tamanho do cache");
+            use crate::player::{CACHE_MAX_MB, CACHE_MIN_MB};
+            let r = ui.add(
+                egui::DragValue::new(&mut self.cache_mb)
+                    .range(CACHE_MIN_MB..=CACHE_MAX_MB)
+                    .suffix(" MB"),
+            );
+            if r.changed() {
+                crate::player::save_cache_limit_mb(self.cache_mb);
+                let limite = self.cache_mb;
+                std::thread::spawn(move || crate::player::trim_cache(limite));
             }
         });
         if !self.ytdlp_ok {

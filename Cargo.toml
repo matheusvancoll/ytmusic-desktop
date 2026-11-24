@@ -4,6 +4,8 @@ version = "0.2.0"
 edition = "2024"
 default-run = "ytmusic"
 description = "Leve player de YouTube Music para Windows, sem navegador"
+# O atualizador do app consulta os Releases deste repositorio.
+repository = "https://github.com/matheusvancoll/ytmusic-desktop"
 
 [[bin]]
 name = "ytmusic"
@@ -27,6 +29,7 @@ sha1 = "0.11.0"
 ureq = { version = "3.5.2", features = ["json"] }
 wry = "0.55"
 tao = "0.35"
+sha2 = "0.11.1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

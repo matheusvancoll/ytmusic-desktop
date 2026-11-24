@@ -57,6 +57,8 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 Filename: "{cmd}"; Parameters: "/C winget install -e --id yt-dlp.yt-dlp --silent --accept-source-agreements --accept-package-agreements"; StatusMsg: "Instalando o yt-dlp..."; Flags: runhidden waituntilterminated; Tasks: installytdlp
 Filename: "{cmd}"; Parameters: "/C winget install -e --id DenoLand.Deno --silent --accept-source-agreements --accept-package-agreements"; StatusMsg: "Instalando o Deno..."; Flags: runhidden waituntilterminated; Tasks: installdeno
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; Atualizacao feita pelo proprio app (instalador silencioso): reabre o app no final.
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: WizardSilent
 
 [UninstallDelete]
 ; Remove tambem os dados do app (cookies da sessao, volume e cache de audio).

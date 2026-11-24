@@ -4,6 +4,7 @@ mod app;
 mod auth;
 mod player;
 mod taskbar;
+mod updater;
 mod util;
 mod ytm;
 

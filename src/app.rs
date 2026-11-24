@@ -3,11 +3,12 @@
 
 use crate::auth::Auth;
 use crate::player::{Player, Status, find_ytdlp};
-use crate::util::fmt_time;
+use crate::updater;
+use crate::util::{self, fmt_time};
 use crate::ytm::{Client, Playlist, Track, thumb_url};
 use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, Vec2, pos2, vec2};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const BG: Color32 = Color32::from_rgb(0x03, 0x03, 0x03);
 const PANEL: Color32 = Color32::from_rgb(0x21, 0x21, 0x21);
@@ -37,6 +38,20 @@ enum Msg {
     Mix(String, Result<Vec<Track>, String>),
     Account(Option<String>),
     Login(Result<Auth, String>),
+    /// Resultado da consulta de atualizacao (`manual`: veio do botao, nao da verificacao diaria).
+    UpdateChecked { manual: bool, result: Result<Option<updater::Release>, String> },
+    UpdateProgress(u64, u64),
+    UpdateDownloaded(Result<std::path::PathBuf, String>),
+}
+
+#[derive(Clone, PartialEq)]
+enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    Downloading { done: u64, total: u64 },
+    Installing,
+    Failed(String),
 }
 
 pub struct App {
@@ -70,6 +85,12 @@ pub struct App {
     cookie_input: String,
     account_name: Option<String>,
     ytdlp_ok: bool,
+    update_state: UpdateState,
+    update_settings: updater::Settings,
+    /// Versao nova achada pela verificacao diaria, aguardando o usuario aceitar.
+    update_available: Option<updater::Release>,
+    auto_checking: bool,
+    next_auto_check: Instant,
     #[cfg(windows)]
     taskbar: Option<crate::taskbar::Taskbar>,
 }
@@ -125,6 +146,11 @@ impl App {
             cookie_input: String::new(),
             account_name: None,
             ytdlp_ok: find_ytdlp().is_some(),
+            update_state: UpdateState::Idle,
+            update_settings: updater::Settings::load(),
+            update_available: None,
+            auto_checking: false,
+            next_auto_check: Instant::now(),
             #[cfg(windows)]
             taskbar: init_taskbar(cc),
         };
@@ -191,7 +217,7 @@ impl App {
         self.refresh_account();
     }
 
-    fn drain_messages(&mut self, ctx: &egui::Context) {
+    fn drain_messages(&mut self) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::Search(r) => {
@@ -253,9 +279,174 @@ impl App {
                     }
                     Err(e) => self.notice = Some(e),
                 },
+                Msg::UpdateChecked { manual, result } => {
+                    if !manual {
+                        self.auto_checking = false;
+                    }
+                    match result {
+                        Ok(found) => {
+                            self.update_settings.last_check = util::unix_secs();
+                            self.update_settings.save();
+                            // Nunca instala sozinho: so avisa, e o usuario decide no aviso
+                            // ou nas configuracoes.
+                            match found {
+                                Some(rel) => {
+                                    if manual {
+                                        self.update_state = UpdateState::Idle;
+                                    }
+                                    self.update_available = Some(rel);
+                                }
+                                None if manual => self.update_state = UpdateState::UpToDate,
+                                None => {}
+                            }
+                        }
+                        Err(e) if manual => self.update_state = UpdateState::Failed(e),
+                        // Falha na verificacao diaria: fica quieto e tenta de novo em 1 hora.
+                        Err(_) => self.next_auto_check = Instant::now() + Duration::from_secs(3600),
+                    }
+                }
+                Msg::UpdateProgress(done, total) => {
+                    if let UpdateState::Downloading { done: d, total: t } = &mut self.update_state {
+                        (*d, *t) = (done, total);
+                    }
+                }
+                Msg::UpdateDownloaded(result) => match result {
+                    Ok(path) => {
+                        self.update_state = UpdateState::Installing;
+                        match updater::launch_installer(&path) {
+                            // O instalador precisa substituir os arquivos: o app fecha e ele o reabre.
+                            Ok(()) => std::process::exit(0),
+                            Err(e) => self.update_state = UpdateState::Failed(e),
+                        }
+                    }
+                    Err(e) => self.update_state = UpdateState::Failed(e),
+                },
             }
         }
-        let _ = ctx;
+    }
+
+    // ---------------------------------------------------------------- atualizacao
+
+    fn update_busy(&self) -> bool {
+        matches!(self.update_state, UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Installing)
+    }
+
+    /// `manual`: botao "Verificar atualizacao" (mostra o resultado nas configuracoes).
+    /// Automatico: roda em segundo plano e fica quieto se nao houver nada novo.
+    /// Nos dois casos, se houver versao nova so avisa; instalar e sempre escolha do usuario.
+    fn check_for_update(&mut self, ctx: &egui::Context, manual: bool) {
+        if self.update_busy() || (!manual && self.auto_checking) {
+            return;
+        }
+        if manual {
+            self.update_state = UpdateState::Checking;
+        } else {
+            self.auto_checking = true;
+        }
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::UpdateChecked { manual, result: updater::fetch_latest() });
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_update(&mut self, rel: updater::Release, ctx: &egui::Context) {
+        self.update_available = None;
+        self.update_state = UpdateState::Downloading { done: 0, total: rel.size };
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let progress_tx = tx.clone();
+            let progress_ctx = ctx.clone();
+            let result = updater::download(&rel, move |done, total| {
+                let _ = progress_tx.send(Msg::UpdateProgress(done, total));
+                progress_ctx.request_repaint();
+            });
+            let _ = tx.send(Msg::UpdateDownloaded(result));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Verificacao diaria: roda ao abrir (se passou um dia) e, com o app aberto por dias, a cada hora reavalia.
+    fn maybe_auto_check(&mut self, ctx: &egui::Context) {
+        if !self.update_settings.auto_check || self.update_busy() || self.update_available.is_some() || self.auto_checking {
+            return;
+        }
+        if self.update_settings.due(util::unix_secs()) && Instant::now() >= self.next_auto_check {
+            self.check_for_update(ctx, false);
+        } else {
+            ctx.request_repaint_after(Duration::from_secs(3600));
+        }
+    }
+
+    fn update_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(rel) = self.update_available.clone() else { return };
+        let mut accept = false;
+        let mut dismiss = false;
+        egui::Frame::new().fill(Color32::from_rgb(0x14, 0x24, 0x3a)).corner_radius(8.0).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Nova versão {} disponível", rel.version)).strong());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.small_button("Depois").clicked() {
+                        dismiss = true;
+                    }
+                    if pill_button(ui, "Baixar e instalar", true).clicked() {
+                        accept = true;
+                    }
+                });
+            });
+        });
+        ui.add_space(6.0);
+        if accept {
+            self.start_update(rel, &ui.ctx().clone());
+        } else if dismiss {
+            self.update_available = None;
+        }
+    }
+
+    fn update_section(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Atualizações").strong().size(15.0));
+        ui.label(RichText::new(format!("Versão instalada: {}", updater::CURRENT)).color(DIM).small());
+        ui.add_space(4.0);
+        match self.update_state.clone() {
+            UpdateState::Idle => {}
+            UpdateState::Checking => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Verificando...");
+                });
+            }
+            UpdateState::UpToDate => {
+                ui.label("Você já está na versão mais recente.");
+            }
+            UpdateState::Downloading { done, total } => {
+                ui.label("Baixando a atualização...");
+                let frac = if total > 0 { (done as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
+                ui.add(egui::ProgressBar::new(frac).show_percentage());
+            }
+            UpdateState::Installing => {
+                ui.label("Instalando... o app vai fechar e abrir de novo.");
+            }
+            UpdateState::Failed(e) => {
+                ui.colored_label(ACCENT, e);
+            }
+        }
+        if let Some(rel) = self.update_available.clone() {
+            ui.label(format!("Nova versão {} disponível.", rel.version));
+            if pill_button(ui, "Baixar e instalar", true).clicked() {
+                self.start_update(rel, &ui.ctx().clone());
+            }
+        }
+        ui.add_space(4.0);
+        let busy = self.update_busy();
+        if ui.add_enabled(!busy, egui::Button::new("Verificar atualização")).clicked() {
+            self.check_for_update(&ui.ctx().clone(), true);
+        }
+        let mut auto = self.update_settings.auto_check;
+        if ui.checkbox(&mut auto, "Verificar automaticamente uma vez por dia").changed() {
+            self.update_settings.auto_check = auto;
+            self.update_settings.save();
+        }
     }
 
     // ----------------------------------------------------------------- queue
@@ -508,6 +699,10 @@ impl App {
             ui.add_space(6.0);
             ui.colored_label(ACCENT, "yt-dlp não encontrado. Instale: winget install yt-dlp.yt-dlp");
         }
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+        self.update_section(ui);
     }
 
     fn track_list(&mut self, ui: &mut egui::Ui, tracks: &[Track], with_mix: bool) {
@@ -812,7 +1007,8 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let wide = ui.available_width() >= WIDE_AT;
-        self.drain_messages(&ctx);
+        self.drain_messages();
+        self.maybe_auto_check(&ctx);
 
         // Avanca a fila quando a faixa termina (ou falha).
         let st = self.player.snapshot();
@@ -876,6 +1072,7 @@ impl eframe::App for App {
         }
         let content_margin = Margin::symmetric(if wide { 24 } else { 12 }, 0);
         egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(content_margin)).show(ui, |ui| {
+            self.update_banner(ui);
             self.notice_bar(ui);
             self.content(ui, wide);
         });

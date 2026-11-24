@@ -490,7 +490,9 @@ impl App {
         ui.add_space(8.0);
         ui.collapsing("Importar cookie manualmente", |ui| {
             ui.label(RichText::new("Cole o cabeçalho Cookie de music.youtube.com (DevTools > Rede).").color(DIM).small());
-            ui.add(egui::TextEdit::multiline(&mut self.cookie_input).desired_rows(3).desired_width(f32::INFINITY));
+            egui::ScrollArea::vertical().max_height(80.0).show(ui, |ui| {
+                ui.add(egui::TextEdit::multiline(&mut self.cookie_input).desired_rows(3).desired_width(f32::INFINITY));
+            });
             if ui.button("Importar").clicked() {
                 match Auth::from_cookie_header(&self.cookie_input) {
                     Some(auth) => {
